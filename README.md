@@ -81,6 +81,7 @@ pip install -r requirements.txt
 ```
 
 ### Step 3. 프로그램 실행
+안전한 상태에서 인터락 경고는 clear 명령어로 초기화
 **[A] 현장 제어용 (CLI Mode)**
 ```bash
 python src/dt5471n_cli.py
