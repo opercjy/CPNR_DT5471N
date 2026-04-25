@@ -82,11 +82,12 @@ pip install -r requirements.txt
 
 ### Step 3. 프로그램 실행
 안전한 상태에서 인터락 경고는 clear 명령어로 초기화
+
 **[A] 현장 제어용 (CLI Mode)**
 ```bash
 python src/dt5471n_cli.py
 ```
-> `v 900` 입력 시 900V로 자동 램핑(30V/s)되며, `csv` 파일에 1초 단위 데이터가 기록됩니다.
+> `v 900` 입력 시 900V로 자동 램핑(30V/s)되며, `csv` 파일에 1분 단위 데이터가 기록됩니다.
 
 **[B] 연구실 분석용 (GUI Mode)**
 ```bash
