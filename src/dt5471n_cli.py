@@ -1,147 +1,113 @@
+import serial
 import time
-import csv
-import os
-import sys
+import queue
 import threading
-from dt5471n_core import DT5471N
+from enum import IntFlag
+from typing import Callable, Optional, Dict
 
-CSV_FILENAME = "dt5471n_datalog.csv"
-term_lock = threading.Lock()
-latest_vmon = 0.0
+class CAEN_Status(IntFlag):
+    """DT5471N STAT Register Bitmask Decoding"""
+    ON     = 1 << 0
+    RUP    = 1 << 1
+    RDW    = 1 << 2
+    OVC    = 1 << 3
+    OVV    = 1 << 4
+    UNV    = 1 << 5
+    MAXV   = 1 << 6
+    TRIP   = 1 << 7
+    OVT    = 1 << 8
+    DIS    = 1 << 10
+    KILL   = 1 << 11
+    ILK    = 1 << 12
+    NOCAL  = 1 << 13
 
-def print_error(msg: str):
-    with term_lock:
-        sys.stdout.write(f"\n\033[91m[HW ERROR] {msg}\033[0m\nPMT> ")
-        sys.stdout.flush()
-
-def handle_telemetry(data: dict):
-    global latest_vmon
-    latest_vmon = data['VMON']
-    stat = data['STATUS']
+class DT5471N:
+    """OS/GUI Independent 1-Channel USB HV Power Supply Core"""
     
-    if stat["TRIP"]:
-        state_str = "!!! ALARM: TRIPPED !!!"
-        bg_color = "\033[41;97m" 
-    elif stat["OVC"]:
-        state_str = "!!! ALARM: OVERCURRENT !!!"
-        bg_color = "\033[41;97m"
-    elif stat["ILK"]:
-        state_str = "!!! INTERLOCK ACTIVE !!!"
-        bg_color = "\033[43;30m"
-    else:
-        state_str = "ON" if stat["ON"] else "OFF"
-        if stat["RUP"]: state_str += " (Ramping UP)"
-        if stat["RDW"]: state_str += " (Ramping DOWN)"
-        bg_color = "\033[44;97m" if stat["ON"] else "\033[40;97m"
-
-    status_line = f" [{time.strftime('%H:%M:%S')}] VMON: {latest_vmon:6.1f} V | IMON: {data['IMON']:6.2f} uA | {state_str} "
-    
-    with term_lock:
-        sys.stdout.write(f"\033[s\033[1;1H\033[K{bg_color}{status_line.ljust(80)}\033[0m\033[u")
-        sys.stdout.flush()
-    
-    with open(CSV_FILENAME, "a", newline="") as f:
-        csv.writer(f).writerow([data['timestamp'], latest_vmon, data['IMON'], state_str.strip()])
-        if int(data['timestamp']) % 10 == 0:
-            f.flush()
-            os.fsync(f.fileno())
-
-if __name__ == "__main__":
-    sys.stdout.write("\033[2J\033[3;1H")
-    
-    if not os.path.exists(CSV_FILENAME):
-        with open(CSV_FILENAME, "w", newline="") as f:
-            csv.writer(f).writerow(["Timestamp", "VMON(V)", "IMON(uA)", "State"])
-
-    pmt = DT5471N(port="/dev/dt5471n")
-    pmt.on_telemetry = handle_telemetry
-    pmt.on_error = print_error
-    pmt.start()
-    time.sleep(1)
-    pmt.set_current_limit(50.0) 
-
-    with term_lock:
-        print("\n=== CPNR NaI(Tl) Field Control & Logging CLI ===")
-        print("  [on]      : Power ON")
-        print("  [off]     : Power OFF")
-        print("  [v num]   : Set Target Voltage (e.g., v 900) - 30V/s Ramp")
-        print("  [c]       : Clear Hardware Alarm (TRIP/OVC)")
-        print("  [q]       : Exit Menu (Detach or Teardown)")
-        print("====================================================\n")
-
-    shutdown_mode = None
-
-    while True:
-        try:
-            cmd_input = input("PMT> ").strip().lower()
-            if not cmd_input: continue
-
-            if cmd_input == 'q' or cmd_input == 'quit':
-                with term_lock:
-                    print("\n[Exit Menu]")
-                    print("  1. Detach   - Keep HV ON, close software only")
-                    print("  2. Teardown - Safe discharge to 0V, then turn OFF")
-                    print("  0. Cancel")
-                    choice = input("Select> ").strip()
-                
-                if choice == '1':
-                    shutdown_mode = 'detach'
-                    break
-                elif choice == '2':
-                    shutdown_mode = 'teardown'
-                    break
-                else:
-                    with term_lock: print(" -> Canceled.")
-            
-            elif cmd_input == 'on':
-                pmt.power_on()
-                with term_lock: print(" -> [Command] Power ON")
-                
-            elif cmd_input == 'off':
-                pmt.power_off()
-                with term_lock: print(" -> [Command] Power OFF")
-                
-            elif cmd_input == 'c' or cmd_input == 'clear':
-                pmt.clear_alarm()
-                with term_lock: print(" -> [Command] Alarm cleared (BDCLR)")
-                
-            elif cmd_input.startswith('v '):
-                try:
-                    target_v = float(cmd_input.split()[1])
-                    if 0 <= target_v <= 3000:
-                        pmt.set_voltage(target_v, ramp_rate=30.0)
-                        with term_lock: print(f" -> [Command] Target voltage set to {target_v}V")
-                    else:
-                        with term_lock: print(" -> [Error] Voltage range is 0 ~ 3000V.")
-                except (IndexError, ValueError):
-                    with term_lock: print(" -> [Error] Invalid format. (e.g., v 900)")
-            else:
-                with term_lock: print(" -> [Error] Unknown command.")
-                
-        except KeyboardInterrupt:
-            with term_lock:
-                choice = input("\n\nInterrupt detected. Keep HV ON? (Y/n): ").strip().lower()
-            shutdown_mode = 'teardown' if choice == 'n' else 'detach'
-            break
-
-    if shutdown_mode == 'detach':
-        with term_lock:
-            print("\n[SYSTEM] Detaching. Serial port will be closed while keeping HV ON.")
-        pmt.stop()
+    def __init__(self, port: str = "/dev/dt5471n", baudrate: int = 9600):
+        self.port = port
+        self.baudrate = baudrate
+        self.ser: Optional[serial.Serial] = None
         
-    elif shutdown_mode == 'teardown':
-        with term_lock:
-            print("\n[SYSTEM] Starting safe teardown. Ramping down to 0V...")
-        pmt.set_voltage(0.0, ramp_rate=30.0)
+        self._is_running = False
+        self._cmd_queue = queue.Queue()
+        self._worker_thread = None
         
-        while latest_vmon > 10.0:
-            with term_lock:
-                sys.stdout.write(f"\r[SYSTEM] Discharging... Current: {latest_vmon:.1f}V (Safe: <10.0V)   ")
-                sys.stdout.flush()
-            time.sleep(1)
+        self.on_telemetry: Optional[Callable[[Dict], None]] = None
+        self.on_error: Optional[Callable[[str], None]] = None
+
+    def _query(self, cmd: str, par: str, val: float = None) -> str:
+        if not self.ser or not self.ser.is_open:
+            raise serial.SerialException("Serial port is not open.")
             
-        pmt.power_off()
-        time.sleep(0.5)
-        pmt.stop()
-        with term_lock:
-            print("\n[SYSTEM] Hardware safely shut down. Port closed.")
+        cmd_str = f"$CMD:{cmd},PAR:{par},VAL:{val:.2f}\r\n" if val is not None else f"$CMD:{cmd},PAR:{par}\r\n"
+        self.ser.reset_input_buffer() 
+        self.ser.write(cmd_str.encode('ascii'))
+        self.ser.flush() 
+        
+        raw_res = self.ser.readline()
+        if not raw_res:
+            raise TimeoutError("Hardware I/O Timeout.")
+            
+        res = raw_res.decode('ascii').strip()
+        if res.startswith("#CMD:ERR"):
+            raise ValueError(f"Command rejected by hardware: {res}")
+        return res.split("VAL:")[1].strip() if "VAL:" in res else "OK"
+
+    def _hw_loop(self):
+        while self._is_running:
+            try:
+                if self.ser is None or not self.ser.is_open:
+                    self.ser = serial.Serial(self.port, self.baudrate, rtscts=True, timeout=1.0)
+                    time.sleep(0.1)
+
+                while not self._cmd_queue.empty():
+                    action, param, val = self._cmd_queue.get_nowait()
+                    self._query(action, param, val)
+                    self._cmd_queue.task_done()
+
+                vmon = float(self._query("MON", "VMON"))
+                imon = float(self._query("MON", "IMON"))
+                stat_val = int(self._query("MON", "STAT"))
+                
+                status = {flag.name: bool(stat_val & flag.value) for flag in CAEN_Status}
+
+                if self.on_telemetry:
+                    self.on_telemetry({
+                        "timestamp": time.time(),
+                        "VMON": vmon,
+                        "IMON": imon,
+                        "STATUS": status
+                    })
+                    
+            except (serial.SerialException, serial.SerialTimeoutException, OSError) as e:
+                if self.ser: self.ser.close()
+                if self.on_error: self.on_error(f"Connection Lost: {e}")
+                time.sleep(2.0)
+            except Exception as e:
+                if self.on_error: self.on_error(f"Logic Error: {e}")
+            
+            time.sleep(1.0)
+
+    def start(self):
+        if self._is_running: return
+        self._is_running = True
+        self._worker_thread = threading.Thread(target=self._hw_loop, daemon=True)
+        self._worker_thread.start()
+
+    def stop(self):
+        self._is_running = False
+        if self._worker_thread: self._worker_thread.join(timeout=2.0)
+        if self.ser: self.ser.close()
+
+    def power_on(self): self._cmd_queue.put(("SET", "ON", None))
+    def power_off(self): self._cmd_queue.put(("SET", "OFF", None))
+    
+    # [수정됨] ramp -> ramp_rate 로 인터페이스 일치
+    def set_voltage(self, v: float, ramp_rate: float = 30.0):
+        self._cmd_queue.put(("SET", "RUP", float(ramp_rate)))
+        self._cmd_queue.put(("SET", "RDW", float(ramp_rate)))
+        self._cmd_queue.put(("SET", "VSET", float(v)))
+        
+    def set_current_limit(self, i: float): self._cmd_queue.put(("SET", "ISET", float(i)))
+    def clear_alarm(self): self._cmd_queue.put(("SET", "BDCLR", None))
