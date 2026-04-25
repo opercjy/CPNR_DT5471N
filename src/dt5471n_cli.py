@@ -30,8 +30,8 @@ def handle_telemetry(data: dict):
         bg_color = "\033[43;30m"
     else:
         state_str = "ON" if stat["ON"] else "OFF"
-        if stat["RUP"]: state_str += " (Ramping UP \u2191)"
-        if stat["RDW"]: state_str += " (Ramping DOWN \u2193)"
+        if stat["RUP"]: state_str += " (Ramping UP)"
+        if stat["RDW"]: state_str += " (Ramping DOWN)"
         bg_color = "\033[44;97m" if stat["ON"] else "\033[40;97m"
 
     status_line = f" [{time.strftime('%H:%M:%S')}] VMON: {latest_vmon:6.1f} V | IMON: {data['IMON']:6.2f} uA | {state_str} "
@@ -40,7 +40,6 @@ def handle_telemetry(data: dict):
         sys.stdout.write(f"\033[s\033[1;1H\033[K{bg_color}{status_line.ljust(80)}\033[0m\033[u")
         sys.stdout.flush()
     
-    # 10초 주기로 디스크 플러시 최적화 (SD카드 수명 보호)
     with open(CSV_FILENAME, "a", newline="") as f:
         csv.writer(f).writerow([data['timestamp'], latest_vmon, data['IMON'], state_str.strip()])
         if int(data['timestamp']) % 10 == 0:
@@ -63,12 +62,12 @@ if __name__ == "__main__":
 
     with term_lock:
         print("\n=== CPNR NaI(Tl) Field Control & Logging CLI ===")
-        print("  [on]      : 고전압 출력 켜기")
-        print("  [off]     : 고전압 출력 끄기")
-        print("  [v 숫자]  : 목표 전압 설정 (예: v 900) - 30V/s 램핑")
-        print("  [c]       : 하드웨어 알람(TRIP/OVC) 초기화")
-        print("  [q]       : 종료 메뉴 (상태 유지 분리 또는 0V 셧다운)")
-        print("================================================\n")
+        print("  [on]      : Power ON")
+        print("  [off]     : Power OFF")
+        print("  [v num]   : Set Target Voltage (e.g., v 900) - 30V/s Ramp")
+        print("  [c]       : Clear Hardware Alarm (TRIP/OVC)")
+        print("  [q]       : Exit Menu (Detach or Teardown)")
+        print("====================================================\n")
 
     shutdown_mode = None
 
@@ -79,11 +78,11 @@ if __name__ == "__main__":
 
             if cmd_input == 'q' or cmd_input == 'quit':
                 with term_lock:
-                    print("\n[시스템 종료 메뉴]")
-                    print("  1. 상태 유지 (Detach) - HV 출력 유지, 모니터링만 종료")
-                    print("  2. 안전 셧다운 (Teardown) - 0V 방전 확인 후 장비 OFF")
-                    print("  0. 취소")
-                    choice = input("선택> ").strip()
+                    print("\n[Exit Menu]")
+                    print("  1. Detach   - Keep HV ON, close software only")
+                    print("  2. Teardown - Safe discharge to 0V, then turn OFF")
+                    print("  0. Cancel")
+                    choice = input("Select> ").strip()
                 
                 if choice == '1':
                     shutdown_mode = 'detach'
@@ -92,47 +91,52 @@ if __name__ == "__main__":
                     shutdown_mode = 'teardown'
                     break
                 else:
-                    with term_lock: print(" -> 종료가 취소되었습니다.")
+                    with term_lock: print(" -> Canceled.")
             
             elif cmd_input == 'on':
                 pmt.power_on()
+                with term_lock: print(" -> [Command] Power ON")
+                
             elif cmd_input == 'off':
                 pmt.power_off()
+                with term_lock: print(" -> [Command] Power OFF")
+                
             elif cmd_input == 'c' or cmd_input == 'clear':
                 pmt.clear_alarm()
+                with term_lock: print(" -> [Command] Alarm cleared (BDCLR)")
+                
             elif cmd_input.startswith('v '):
                 try:
                     target_v = float(cmd_input.split()[1])
                     if 0 <= target_v <= 3000:
                         pmt.set_voltage(target_v, ramp_rate=30.0)
-                        with term_lock: print(f" -> [명령 전송] 목표 전압 {target_v}V 설정 완료")
+                        with term_lock: print(f" -> [Command] Target voltage set to {target_v}V")
                     else:
-                        with term_lock: print(" -> [오류] 설정 가능 전압 범위는 0 ~ 3000V 입니다.")
+                        with term_lock: print(" -> [Error] Voltage range is 0 ~ 3000V.")
                 except (IndexError, ValueError):
-                    with term_lock: print(" -> [오류] 명령어 형식이 잘못되었습니다. (예: v 900)")
+                    with term_lock: print(" -> [Error] Invalid format. (e.g., v 900)")
             else:
-                with term_lock: print(" -> [오류] 알 수 없는 명령어입니다.")
+                with term_lock: print(" -> [Error] Unknown command.")
                 
         except KeyboardInterrupt:
             with term_lock:
-                choice = input("\n\n인터럽트 감지. HV 출력을 유지하시겠습니까? (Y/n): ").strip().lower()
+                choice = input("\n\nInterrupt detected. Keep HV ON? (Y/n): ").strip().lower()
             shutdown_mode = 'teardown' if choice == 'n' else 'detach'
             break
 
     if shutdown_mode == 'detach':
         with term_lock:
-            print("\n[SYSTEM] 장비 출력 상태를 유지한 채 포트를 닫고 통신을 해제(Detach)합니다.")
+            print("\n[SYSTEM] Detaching. Serial port will be closed while keeping HV ON.")
         pmt.stop()
         
     elif shutdown_mode == 'teardown':
         with term_lock:
-            print("\n[SYSTEM] 시스템 안전 셧다운을 시작합니다. 0V로 램프 다운 하달...")
+            print("\n[SYSTEM] Starting safe teardown. Ramping down to 0V...")
         pmt.set_voltage(0.0, ramp_rate=30.0)
         
-        # 동적 전압 감시: 완전히 방전될 때까지 무한 대기
         while latest_vmon > 10.0:
             with term_lock:
-                sys.stdout.write(f"\r[SYSTEM] 물리적 방전 대기 중... 현재 전압: {latest_vmon:.1f}V (Safe: <10V)   ")
+                sys.stdout.write(f"\r[SYSTEM] Discharging... Current: {latest_vmon:.1f}V (Safe: <10.0V)   ")
                 sys.stdout.flush()
             time.sleep(1)
             
@@ -140,4 +144,4 @@ if __name__ == "__main__":
         time.sleep(0.5)
         pmt.stop()
         with term_lock:
-            print("\n[SYSTEM] 하드웨어 안전 셧다운 및 포트 닫기 완료.")
+            print("\n[SYSTEM] Hardware safely shut down. Port closed.")
