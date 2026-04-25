@@ -64,7 +64,6 @@ class DAQ_MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
         
-        # --- 제어 패널 (수직 적재 레이아웃) ---
         control_layout = QVBoxLayout()
         
         dash_group = QGroupBox("Real-time Monitor (1 Hz)")
@@ -120,7 +119,6 @@ class DAQ_MainWindow(QMainWindow):
         control_layout.addWidget(cmd_group)
         control_layout.addStretch()
         
-        # --- 시계열(Datetime) 플롯 ---
         plot_layout = QVBoxLayout()
         pg.setConfigOption('background', 'w')
         pg.setConfigOption('foreground', 'k')
@@ -180,7 +178,6 @@ class DAQ_MainWindow(QMainWindow):
         self.curve_v.setData(list(self.time_data), list(self.v_data))
         self.curve_i.setData(list(self.time_data), list(self.i_data))
 
-        # 위험 이벤트(TRIP/OVC) 발생 시 1분 대기 무시하고 즉각 로깅
         force_log = stat["TRIP"] or stat["OVC"]
         
         if self.chk_logging.isChecked() or force_log:
@@ -206,10 +203,10 @@ class DAQ_MainWindow(QMainWindow):
             return
 
         reply = QMessageBox.question(
-            self, '시스템 종료',
-            '하드웨어 상태 유지(Detach) 또는 0V 안전 방전(Teardown)을 선택하십시오.\n\n'
-            'Yes: 장비 상태 유지 (소프트웨어만 종료)\n'
-            'No : 0V 안전 방전 후 장비 전원 차단',
+            self, 'System Exit',
+            'Choose exit mode:\n\n'
+            'Yes: Detach (Keep HV ON, close GUI only)\n'
+            'No : Teardown (Safe discharge to 0V & Power OFF)',
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes
         )
 
@@ -227,10 +224,9 @@ class DAQ_MainWindow(QMainWindow):
         self.shutdown_in_progress = True
         self.pmt.set_voltage(0.0, ramp_rate=30.0)
         
-        # Dynamic Teardown (취소 버튼 비활성화, 0,0 세팅으로 무한 로딩 인디케이터 적용)
-        self.progress = QProgressDialog("PMT 다이노드 안전 방전 중...", None, 0, 0, self)
+        self.progress = QProgressDialog("Safe Discharging...", None, 0, 0, self)
         self.progress.setCancelButton(None) 
-        self.progress.setWindowTitle("시스템 안전 셧다운")
+        self.progress.setWindowTitle("System Safe Shutdown")
         self.progress.setWindowModality(Qt.WindowModal)
         self.progress.show()
         
@@ -239,9 +235,8 @@ class DAQ_MainWindow(QMainWindow):
         self.shutdown_timer.start(1000)
 
     def process_shutdown(self):
-        self.progress.setLabelText(f"PMT 방전 진행 중...\n현재 전압: {self.last_vmon:.1f} V (안전 기준: 10.0V 이하)")
+        self.progress.setLabelText(f"Discharging PMT...\nCurrent Voltage: {self.last_vmon:.1f} V (Safe: <10.0V)")
         
-        # 동적 전압 감시: 10V 도달 시에만 물리적 전원 차단
         if self.last_vmon < 10.0:
             self.shutdown_timer.stop()
             self.pmt.power_off()
