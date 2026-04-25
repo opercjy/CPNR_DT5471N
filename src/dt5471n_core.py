@@ -6,7 +6,7 @@ from enum import IntFlag
 from typing import Callable, Optional, Dict
 
 class CAEN_Status(IntFlag):
-    """DT5471N STAT 레지스터 비트마스크 디코딩"""
+    """DT5471N STAT Register Bitmask Decoding"""
     ON     = 1 << 0
     RUP    = 1 << 1
     RDW    = 1 << 2
@@ -22,7 +22,7 @@ class CAEN_Status(IntFlag):
     NOCAL  = 1 << 13
 
 class DT5471N:
-    """OS/GUI 독립형 1채널 USB 고전압 공급 장치 제어 코어"""
+    """OS/GUI Independent 1-Channel USB HV Power Supply Core"""
     
     def __init__(self, port: str = "/dev/dt5471n", baudrate: int = 9600):
         self.port = port
@@ -38,7 +38,7 @@ class DT5471N:
 
     def _query(self, cmd: str, par: str, val: float = None) -> str:
         if not self.ser or not self.ser.is_open:
-            raise serial.SerialException("Port not opened.")
+            raise serial.SerialException("Serial port is not open.")
             
         cmd_str = f"$CMD:{cmd},PAR:{par},VAL:{val:.2f}\r\n" if val is not None else f"$CMD:{cmd},PAR:{par}\r\n"
         self.ser.reset_input_buffer() 
@@ -47,11 +47,11 @@ class DT5471N:
         
         raw_res = self.ser.readline()
         if not raw_res:
-            raise TimeoutError("Hardware Timeout")
+            raise TimeoutError("Hardware I/O Timeout.")
             
         res = raw_res.decode('ascii').strip()
         if res.startswith("#CMD:ERR"):
-            raise ValueError(f"Rejected: {res}")
+            raise ValueError(f"Command rejected by hardware: {res}")
         return res.split("VAL:")[1].strip() if "VAL:" in res else "OK"
 
     def _hw_loop(self):
@@ -82,10 +82,10 @@ class DT5471N:
                     
             except (serial.SerialException, serial.SerialTimeoutException, OSError) as e:
                 if self.ser: self.ser.close()
-                if self.on_error: self.on_error(str(e))
+                if self.on_error: self.on_error(f"Connection Lost: {e}")
                 time.sleep(2.0)
             except Exception as e:
-                if self.on_error: self.on_error(str(e))
+                if self.on_error: self.on_error(f"Logic Error: {e}")
             
             time.sleep(1.0)
 
@@ -96,7 +96,6 @@ class DT5471N:
         self._worker_thread.start()
 
     def stop(self):
-        """소프트웨어 자원만 해제 (하드웨어 출력 상태 유지)"""
         self._is_running = False
         if self._worker_thread: self._worker_thread.join(timeout=2.0)
         if self.ser: self.ser.close()
