@@ -1,0 +1,2 @@
+# CAEN DT5471N USB High Voltage Power Supply Persistent Binding
+SUBSYSTEM=="tty", ATTRS{idVendor}=="21e1", ATTRS{idProduct}=="0006", SYMLINK+="dt5471n", MODE="0666"
