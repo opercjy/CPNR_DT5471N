@@ -191,6 +191,7 @@ class DAQ_MainWindow(QMainWindow):
                     self.db_conn.commit()
                     self.last_log_time = current_time
                 except sqlite3.Error as e:
+                    self.db_conn.rollback() 
                     print(f"DB Logging Error: {e}")
 
     def show_error(self, msg: str):
