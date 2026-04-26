@@ -6,7 +6,6 @@ from enum import IntFlag
 from typing import Callable, Optional, Dict
 
 class CAEN_Status(IntFlag):
-    """DT5471N STAT Register Bitmask Decoding"""
     ON     = 1 << 0
     RUP    = 1 << 1
     RDW    = 1 << 2
@@ -22,8 +21,6 @@ class CAEN_Status(IntFlag):
     NOCAL  = 1 << 13
 
 class DT5471N:
-    """OS/GUI Independent 1-Channel USB HV Power Supply Core"""
-    
     def __init__(self, port: str = "/dev/dt5471n", baudrate: int = 9600):
         self.port = port
         self.baudrate = baudrate
@@ -61,10 +58,14 @@ class DT5471N:
                     self.ser = serial.Serial(self.port, self.baudrate, rtscts=True, timeout=1.0)
                     time.sleep(0.1)
 
-                while not self._cmd_queue.empty():
-                    action, param, val = self._cmd_queue.get_nowait()
+                # [수정됨] sleep(1.0) 대신 timeout 기반의 블로킹 큐 사용 (즉각 반응성 확보)
+                try:
+                    action, param, val = self._cmd_queue.get(timeout=1.0)
                     self._query(action, param, val)
                     self._cmd_queue.task_done()
+                    continue # 명령을 처리한 직후에는 상태 폴링을 한 번 건너뛰어 속도 향상
+                except queue.Empty:
+                    pass # 1초간 큐가 비어있었으므로 아래의 상태 폴링 진행
 
                 vmon = float(self._query("MON", "VMON"))
                 imon = float(self._query("MON", "IMON"))
@@ -86,8 +87,6 @@ class DT5471N:
                 time.sleep(2.0)
             except Exception as e:
                 if self.on_error: self.on_error(f"Logic Error: {e}")
-            
-            time.sleep(1.0)
 
     def start(self):
         if self._is_running: return
@@ -102,9 +101,12 @@ class DT5471N:
 
     def power_on(self): self._cmd_queue.put(("SET", "ON", None))
     def power_off(self): self._cmd_queue.put(("SET", "OFF", None))
-    def set_voltage(self, v: float, ramp: float = 30.0):
-        self._cmd_queue.put(("SET", "RUP", float(ramp)))
-        self._cmd_queue.put(("SET", "RDW", float(ramp)))
+    
+    # [수정됨] 매개변수명을 ramp_rate로 변경하여 인터페이스 통일
+    def set_voltage(self, v: float, ramp_rate: float = 30.0):
+        self._cmd_queue.put(("SET", "RUP", float(ramp_rate)))
+        self._cmd_queue.put(("SET", "RDW", float(ramp_rate)))
         self._cmd_queue.put(("SET", "VSET", float(v)))
+        
     def set_current_limit(self, i: float): self._cmd_queue.put(("SET", "ISET", float(i)))
     def clear_alarm(self): self._cmd_queue.put(("SET", "BDCLR", None))
